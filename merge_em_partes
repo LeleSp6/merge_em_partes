@@ -1,0 +1,433 @@
+
+create  procedure merge_dinaymic_v2  
+(  
+  
+ @table_source                      varchar(150)     = null
+,@table_target                      varchar(150)     = null
+,@cols_key                          varchar(150)     = NULL  
+,@schema_table_source               varchar(150)     = 'dbo'
+,@schema_table_target                varchar(150)    = 'dbo'
+,@name_base_table_source            varchar(150) 	 = null
+,@name_base_table_target            varchar(150)     = null
+,@usar_pk_como_chave                char(1)          = 'N' 
+,@string_linked_server              varchar(8000)    = null
+,@utiliza_delete                    char(1) =  'N'
+,@help                              bit = 0 
+,@filtro                            varchar(max) =  NULL
+,@tp_operacao                       varchar(5)  =  null
+
+
+
+)  
+  
+as  
+  
+  /* Minhas redes:
+Blog: https://blogdoleandrosp.blogspot.com/
+Linkedin: https://www.linkedin.com/in/leandro-sampaio-510599117/
+
+*/
+set nocount on 
+
+  if @help = 1
+  begin
+  print 
+            '@table_source            = Nome da tabela de origem'
++char(13) + '@table_target            = Nome da tabela destino  '
++char(13) + '@cols_key                = Aqui você pode passar as colunas que são chaves para o merge (caso seja uma chave composta basta passar as colunas separadas por VIRGULA) Ex: ''COL1,COL2,COL3''  '
++char(13) + '@schema_table_source     = Passar o schema da tabela origem por padrão o schema é dbo'
++char(13) + '@schema_table_target      = Passar o schema da tabela destino por padrão o schema é dbo'
++char(13) + '@name_base_table_source  = Nome da base da tabela origem'
++char(13) + '@name_base_table_target  = Nome da base da tabela destino'
++char(13) + '@usar_pk_como_chave      = Nessa parametro voce pode passar S ou N, caso passe S, o merge será feito usando a primary key como chave'
++char(13) + '@string_linked_server    = Nesse parametro voce pode passar o nome do linked server da tabela origem, caso tenha um linked server, se não tiver deixe NULL '
++char(13) + '@filtro    = Nesse parametro voce pode passar um filtro para poder fazer na tabela origem '
++char(13) + '@tp_operacao    = Nesse parametro voce pode escolher se vai fazer somente um insert, somente um update na tabela destino, ou os dois '
++char(13)  + '
+  
+ Essa rotina faz as seguintes alterações  
+ O dado que existir na origem e não existir no destino ela insere no destino;  
+ O dado que estiver diferente entre a origem e o destino, ela faz um update no destino para equalizar;  
+ O dado que não existir na origem e existir no destino, ela deleta do destino;  
+ Obs: as estruturas entre as tabelas precisam ser iguais ( nome e quantidade de colunas).    
+
+'
+  return
+
+  end
+
+
+begin  
+
+declare @ident_on varchar(500)
+
+declare @ident_off varchar(500)
+   
+  if  ( 
+  select isnull(COUNT('') ,0) from sys.tables a 
+  inner join sys.columns b 
+  on a.object_id = b.object_id 
+  where a.name = @table_target
+  and b.is_identity = 1 ) = 1
+  begin
+
+
+set @ident_on =  'set insert_identity ' + @name_base_table_target + '.'+ @schema_table_target + '.' + @table_target + ' on '
+
+
+set @ident_off =  'set insert_identity ' + @name_base_table_target + '.'+ @schema_table_target + '.' + @table_target + ' off '
+  end
+
+  
+  if @string_linked_server is null
+  begin
+  set @name_base_table_source  = @name_base_table_source + '.'
+  end
+  else 
+  begin
+  set @name_base_table_source = '.'+@name_base_table_source+ '.'
+  end
+  
+set @string_linked_server = isnull(@string_linked_server,'')  
+ 
+  
+  if @table_source is null or @table_target is null
+  begin
+  print 'É necessário passar os nomes das tabelas'
+  return
+  end
+  
+ if @cols_key is null and @usar_pk_como_chave = 'N'
+ BEGIN
+ Print 'Verifique os parametros  @cols_key e @usar_pk_como_chave'
+ return
+ END
+
+   
+if OBJECT_ID('tempdb..#table') is not null  
+begin  
+drop table #table  
+end  
+create table #table (name varchar(256))   
+     
+declare @objs nvarchar(max)   
+
+if @usar_pk_como_chave = 'N'  
+BEGIN                                               
+if @cols_key is not null                  
+begin                  
+select @objs =   
+'select   
+b.name  
+from '+@string_linked_server+@name_base_table_source+'sys.tables a   
+inner join '+ @string_linked_server+@name_base_table_source+'sys.columns  b  
+on a.object_id   = b.object_id   
+where  b.name in(''' + REPLACE(replace(replace(@cols_key,' ',''),' ',''), ',',''',''')  + ''') 
+and a.name =' +''''+ @table_source +''''                
+insert into #table  exec (@objs)      
+  
+end     
+  
+  
+if @objs is null  
+begin  
+print 'Tem algum de errado na declaração das colunas, ou elas não existem'  
+return  
+end  
+END  
+ELSE  
+BEGIN  
+select @objs =   
+  
+'SELECT   
+column_name AS COLUNA  
+FROM '+@string_linked_server+@name_base_table_source+'information_schema.key_column_usage  
+WHERE OBJECTPROPERTY(OBJECT_ID(constraint_name), ''IsPrimaryKey'') = 1  
+and table_name COLLATE SQL_Latin1_General_CP1_CI_AI = '    +''''+ @table_source +''''                                   
+ 
+
+insert into #table  exec (@objs)      
+ 
+  
+  IF (select count('') from  #table)=  0 
+  BEGIN
+  Print 'Parametro  @usar_pk_como_chave = S, mas tabela origem não tem primary key, tabela: ' + @table_target
+  return;
+  END
+
+END  
+  
+      
+  
+declare   
+ @aux_matche_1          nvarchar(max)  
+,@aux_not_matche        nvarchar(max)  
+,@chaves                nvarchar(max)  
+,@create_Script         nvarchar(max)   
+
+
+if OBJECT_ID('tempdb..#aux_final') is not null
+
+begin
+drop table #aux_final
+end
+
+create table #aux_final
+(
+saida nvarchar(max)
+,id int identity
+)
+  
+
+
+
+if OBJECT_ID('tempdb..#aux_matche_1') is not null
+
+begin
+drop table #aux_matche_1 
+end
+
+create table #aux_matche_1 
+(
+columns_update nvarchar(max)
+,id int identity
+)
+  
+
+if OBJECT_ID('tempdb..#aux_not_matche') is not null
+
+begin
+drop table #aux_not_matche 
+end
+
+create table #aux_not_matche 
+(
+columns_update nvarchar(max)
+,id int identity
+)
+  
+  
+  
+set @chaves =  
+ (  
+  select 'Origem.'  + name  +' = Destino.' +name  +' ' + 'and ' from #table  
+ for xml path('')  
+ )   
+ set @chaves =  LEFT(@chaves,LEN(@chaves)-3)  
+
+  
+
+insert into #aux_matche_1
+select 'Destino.'  + b.name  +' = Origem.' +b.name  + ',' as columns_update  from sys.tables a   
+inner join    sys.columns b   
+on a.object_id = b.object_id  
+where a.name = @table_target  
+--and b.name COLLATE SQL_Latin1_General_CP1_CI_AI  not in (select name from #table)  
+
+
+
+
+update a 
+set a.columns_update =   LEFT(columns_update,LEN(columns_update)-1)  
+  
+--select *
+ from  #aux_matche_1 a 
+ where id in(select max(id) from #aux_matche_1)
+ 
+--set  @aux_matche_1 =  
+--(  
+--select 'Destino.'  + b.name  +' = Origem.' +b.name  + ','  from sys.tables a   
+--inner join    sys.columns b   
+--on a.object_id = b.object_id  
+--where a.name = @table_target  
+--and b.name COLLATE SQL_Latin1_General_CP1_CI_AI  not in (select name from #table)  
+--for xml path('')  
+--)  
+--set @aux_matche_1 = LEFT(@aux_matche_1,LEN(@aux_matche_1)-1)  
+  
+
+
+
+
+insert into #aux_not_matche
+select 'origem.' +  b.name  + ','  as columns_update from sys.tables a   
+inner join    sys.columns b   
+on a.object_id = b.object_id  
+where a.name = @table_target  
+
+
+
+
+update a 
+set a.columns_update =   LEFT(columns_update,LEN(columns_update)-1)  
+  
+--select *
+ from  #aux_not_matche a 
+ where id in(select max(id) from #aux_not_matche)
+
+
+   
+--set  @aux_not_matche =  
+--(  
+--select 'origem.' +  b.name  + ','  from sys.tables a   
+--inner join    sys.columns b   
+--on a.object_id = b.object_id  
+--where a.name = @table_target  
+--for xml path('')  
+--)  
+--set @aux_not_matche =  'WHEN NOT MATCHED THEN INSERT VALUES(' +LEFT(@aux_not_matche,LEN(@aux_not_matche)-1) + ')'  
+  
+
+
+--insert into #aux_final
+--select  'update destino' as saida
+
+
+if @tp_operacao is null
+begin
+
+insert into #aux_final
+select ' UPDATE  destino SET ' 
+
+insert into #aux_final
+select columns_update from #aux_matche_1
+order by id
+
+
+
+insert into #aux_final
+select  ' from ' + @name_base_table_target + '.'+ @schema_table_target + '.' + @table_target + ' as  destino' 
+
+
+insert into #aux_final
+select ' inner join  ' +@string_linked_server +@name_base_table_source+ @schema_table_source + '.' + @table_source + ' as origem' 
+
+insert into #aux_final
+select 'on (' +@chaves + ')' 
+insert into #aux_final
+select ' where '  + isnull(@filtro,'')
+insert into #aux_final
+select 'GO'
+
+
+insert into #aux_final
+select isnull(@ident_on,'')
+
+insert into #aux_final
+select ' insert into  '   + @name_base_table_target + '.'+ @schema_table_target + '.' + @table_target + ' ('
+
+insert into #aux_final
+select replace(columns_update,'origem.','') from #aux_not_matche
+order by id
+
+insert into #aux_final
+select ' ) ' 
+
+insert into #aux_final
+select 'select   ' 
+
+insert into #aux_final
+select columns_update from #aux_not_matche
+order by id
+
+insert into #aux_final
+select  ' from ' +@string_linked_server +@name_base_table_source+ @schema_table_source + '.' + @table_source + ' as origem ' 
+insert into #aux_final
+select ' where not exists ( select * from '  + @name_base_table_target + '.'+ @schema_table_target + '.' + @table_target + ' as  destino' 
+insert into #aux_final
+select 'where ' +@chaves + ')' 
+insert into #aux_final
+select ' and '  + isnull(@filtro,'')
+
+insert into #aux_final
+select isnull(@ident_on,'')
+
+
+  
+insert into #aux_final
+select 'GO'
+
+    
+
+select saida from #aux_final
+order by id 
+
+end
+
+if @tp_operacao =  'i'
+begin
+
+insert into #aux_final
+select isnull(@ident_on,'')
+
+insert into #aux_final
+select ' insert into  '   + @name_base_table_target + '.'+ @schema_table_target + '.' + @table_target + ' ('
+
+insert into #aux_final
+select replace(columns_update,'origem.','') from #aux_not_matche
+order by id
+
+insert into #aux_final
+select ' ) ' 
+
+insert into #aux_final
+select 'select   ' 
+
+insert into #aux_final
+select columns_update from #aux_not_matche
+order by id
+
+insert into #aux_final
+select  ' from ' +@string_linked_server +@name_base_table_source+ @schema_table_source + '.' + @table_source + ' as origem ' 
+insert into #aux_final
+select ' where not exists ( select * from '  + @name_base_table_target + '.'+ @schema_table_target + '.' + @table_target + ' as  destino' 
+insert into #aux_final
+select 'where ' +@chaves + ')' 
+insert into #aux_final
+select ' and '  + isnull(@filtro,'')
+
+insert into #aux_final
+select isnull(@ident_on,'')
+
+
+select saida from #aux_final
+order by id 
+
+end
+
+
+
+
+if @tp_operacao =  'u'
+begin
+
+insert into #aux_final
+select ' UPDATE  destino SET ' 
+
+insert into #aux_final
+select columns_update from #aux_matche_1
+order by id
+
+
+
+insert into #aux_final
+select  ' from ' + @name_base_table_target + '.'+ @schema_table_target + '.' + @table_target + ' as  destino' 
+
+
+insert into #aux_final
+select ' inner join  ' +@string_linked_server +@name_base_table_source+ @schema_table_source + '.' + @table_source + ' as origem' 
+
+insert into #aux_final
+select 'on (' +@chaves + ')' 
+insert into #aux_final
+select ' where '  + isnull(@filtro,'')
+insert into #aux_final
+select 'GO'
+
+
+select saida from #aux_final
+order by id 
+
+end
+
+end 
